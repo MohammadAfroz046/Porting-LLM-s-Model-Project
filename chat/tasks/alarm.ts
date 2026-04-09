@@ -59,7 +59,7 @@ export const handleAlarm = async (
         let alarmData: Partial<AlarmEvent>;
         try {
             alarmData = JSON.parse(jsonText);
-        } catch (parseError) {
+        } catch (parseError: any) {
             throw new Error(`JSON Parse error: ${parseError.message}. Raw JSON: "${jsonText}"`);
         }
         console.log('Parsed Alarm Data:', alarmData);
@@ -92,7 +92,7 @@ export const handleAlarm = async (
         try {
             const result = await RTNMyAlarm.setAlarm(hour, minute, days);
             console.log('Alarm intent triggered successfully:', result);
-        } catch (nativeError) {
+        } catch (nativeError: any) {
             if (nativeError.code === 'NO_COMPATIBLE_APP') {
                 throw new Error(nativeError.message);
             }
@@ -117,12 +117,9 @@ export const handleAlarm = async (
 
         if (RTNMyAlarm) {
             try {
-                const result = await RTNMyAlarm.setAlarm(hour, minute, days).catch((err) => {
-                    console.error('Fallback alarm failed:', err.message);
-                    throw err;
-                });
+                const result = await RTNMyAlarm.setAlarm(hour, minute, days);
                 console.log('Fallback alarm set successfully:', result);
-            } catch (fallbackError) {
+            } catch (fallbackError: any) {
                 console.error('Fallback setup error:', fallbackError);
             }
         }

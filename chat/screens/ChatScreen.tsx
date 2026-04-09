@@ -18,15 +18,18 @@ import {
 import { initLlama, LlamaContext } from 'llama.rn';
 import RNFS from 'react-native-fs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { retrieveContext } from '../utils/rag/ragPipeline';
+import { initEmbeddingModel } from '../utils/rag/embedder';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import AudioWaveform from './audiowaveformCode';
 import { routeTask } from '../utils/taskRouter';
+import { useProfile } from '../utils/ProfileContext';
+import { profileKey } from '../utils/profileManager';
 
 // Use platform-specific paths for MODELS_DIR
 const MODELS_DIR = RNFS.ExternalDirectoryPath + '/models';
 
-const SELECTED_MODEL_KEY = 'selected_model';
-const TASK_HISTORY_KEY = 'task_history';
+// Keys generated dynamically below using profileKey
 
 const getCurrentTime = () => {
   const now = new Date();
@@ -52,7 +55,7 @@ type Task = {
   dateTime: string;
 };
 
-const ChatScreen = ({ navigation, route }) => {
+const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [context, setContext] = useState<LlamaContext | null>(null);
@@ -66,6 +69,14 @@ const ChatScreen = ({ navigation, route }) => {
   const [isHistoryModalVisible, setIsHistoryModalVisible] = useState(false);
   const modelId = route.params?.selectedModelId;
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Bug #11 fix: use a ref to hold context so cleanup always has the current value
+  const contextRef = useRef<LlamaContext | null>(null);
+  const { profileId } = useProfile();
+
+  // Bug #16 fix: guard against null profileId in key generation
+  const SELECTED_MODEL_KEY = profileId ? profileKey(profileId, '_selected_model') : '';
+  const TASK_HISTORY_KEY = profileId ? profileKey(profileId, '_task_history') : '';
+  const CHAT_MESSAGES_KEY = profileId ? profileKey(profileId, '_chat_messages') : '';
 
   useEffect(() => {
     LogBox.ignoreLogs(['new NativeEventEmitter']);
@@ -104,6 +115,8 @@ const ChatScreen = ({ navigation, route }) => {
         if (!llamaContext) {
           throw new Error('Model initialization failed. Please try again.');
         }
+        // Bug #11 fix: keep ref in sync for cleanup
+        contextRef.current = llamaContext;
         setContext(llamaContext);
         setModelStatus(`Model loaded: ${selectedModelId}`);
       } catch (error) {
@@ -126,17 +139,29 @@ const ChatScreen = ({ navigation, route }) => {
       }
     };
 
+    const loadChatHistory = async () => {
+      try {
+        const chatData = await AsyncStorage.getItem(CHAT_MESSAGES_KEY);
+        if (chatData) setMessages(JSON.parse(chatData));
+      } catch (error) {
+        console.error('Error loading chat history:', error);
+      }
+    };
+
     initializeModel();
     loadTaskHistory();
+    loadChatHistory();
 
     return () => {
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
         typingTimeoutRef.current = null;
       }
-      if (context) {
+      // Bug #11 fix: use contextRef instead of stale closure over context state
+      if (contextRef.current) {
         try {
-          context.release();
+          contextRef.current.release();
+          contextRef.current = null;
           setContext(null);
         } catch (releaseError) {
           console.error('Error releasing context:', releaseError);
@@ -210,6 +235,7 @@ const ChatScreen = ({ navigation, route }) => {
           type: 'bot',
           time: getCurrentTime(),
         };
+        AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(updated)).catch(console.error);
         return updated;
       });
 
@@ -247,18 +273,33 @@ const ChatScreen = ({ navigation, route }) => {
       time: getCurrentTime(),
     };
 
-    setMessages((prev) => [...prev, userMessage]);
+    // Bug #10 fix: single atomic setMessages call instead of two separate pushes
     setInputText('');
     setIsLoading(true);
 
-    setMessages((prev) => [
-      ...prev,
-      { text: '...', type: 'loading' as const, time: getCurrentTime() },
-    ]);
+    setMessages((prev) => {
+      const updated = [...prev, userMessage, { text: '...', type: 'loading' as const, time: getCurrentTime() }];
+      AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(updated)).catch(console.error);
+      return updated;
+    });
 
     try {
       const startTime = Date.now();
-      const response = await routeTask(userMessage.text, context, saveTaskToHistory);
+      
+      let finalPrompt = userMessage.text;
+      try {
+        if (profileId) {
+          // Embedding model is initialized by ProfileContext — no duplicate init needed
+          const contextText = await retrieveContext(userMessage.text, profileId);
+          if (contextText) {
+            finalPrompt = `Use the following context to answer:\n\n${contextText}\n\nUser: ${userMessage.text}`;
+          }
+        }
+      } catch (err) {
+        console.warn('RAG retrieval failed in ChatScreen:', err);
+      }
+
+      const response = await routeTask(finalPrompt, context, saveTaskToHistory);
 
       if (!response || typeof response !== 'string') {
         throw new Error('Invalid response from routeTask');
@@ -430,7 +471,6 @@ const ChatScreen = ({ navigation, route }) => {
           renderItem={renderMessage}
           keyExtractor={(_, index) => index.toString()}
           contentContainerStyle={styles.messagesContainer}
-          onError={(error) => console.error('FlatList error:', error)}
         />
       )
       }
@@ -498,7 +538,6 @@ const ChatScreen = ({ navigation, route }) => {
             placeholderTextColor="#888"
             editable={!!context && !isLoading && !isListening}
             multiline
-            onError={(e) => console.error('TextInput error:', e)}
           />
           <View style={styles.buttonContainer}>
             {isLoading ? (
@@ -747,7 +786,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     marginHorizontal: 8,
-    fontFamily: 'Inter',
   },
   botIcon: {
     width: 18,

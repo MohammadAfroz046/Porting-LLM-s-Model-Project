@@ -1,9 +1,74 @@
+// chat/types/react-native-fs.d.ts
+// Type declarations for react-native-fs
+
 declare module 'react-native-fs' {
-    interface RNFS {
-      unlink(voskZipPath: string): unknown;
-      exists(voskLocalPath: string): unknown;
-      unzip(source: string, target: string): Promise<void>;
-    }
-    const RNFS: RNFS;
-    export default RNFS;
+  export const ExternalDirectoryPath: string;
+  export const DocumentDirectoryPath: string;
+  export const CachesDirectoryPath: string;
+  export const MainBundlePath: string;
+  export const TemporaryDirectoryPath: string;
+
+  export function exists(path: string): Promise<boolean>;
+  export function mkdir(path: string): Promise<void>;
+  export function readFile(path: string, encoding?: string): Promise<string>;
+  export function writeFile(path: string, content: string, encoding?: string): Promise<void>;
+  export function unlink(path: string): Promise<void>;
+  export function readDir(path: string): Promise<
+    {
+      name: string;
+      path: string;
+      size: number;
+      isFile: () => boolean;
+      isDirectory: () => boolean;
+    }[]
+  >;
+
+  export interface DownloadBeginCallbackResult {
+    jobId: number;
+    statusCode: number;
+    contentLength: number;
+    headers: Record<string, string>;
+  }
+
+  export interface DownloadProgressCallbackResult {
+    jobId: number;
+    contentLength: number;
+    bytesWritten: number;
+  }
+
+  export interface DownloadResult {
+    jobId: number;
+    statusCode: number;
+    bytesWritten: number;
+  }
+
+  export function downloadFile(options: {
+    fromUrl: string;
+    toFile: string;
+    begin?: (res: DownloadBeginCallbackResult) => void;
+    progress?: (res: DownloadProgressCallbackResult) => void;
+    background?: boolean;
+    progressDivider?: number;
+    connectionTimeout?: number;
+    readTimeout?: number;
+    cacheable?: boolean;
+    signal?: AbortSignal;
+  }): { jobId: number; promise: Promise<DownloadResult> };
+
+  const RNFS: {
+    ExternalDirectoryPath: string;
+    DocumentDirectoryPath: string;
+    CachesDirectoryPath: string;
+    MainBundlePath: string;
+    TemporaryDirectoryPath: string;
+    exists: typeof exists;
+    mkdir: typeof mkdir;
+    readFile: typeof readFile;
+    writeFile: typeof writeFile;
+    unlink: typeof unlink;
+    readDir: typeof readDir;
+    downloadFile: typeof downloadFile;
+  };
+
+  export default RNFS;
 }

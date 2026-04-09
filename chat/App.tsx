@@ -1,3 +1,5 @@
+// chat/App.tsx - full updated file
+
 import React, { useEffect, useState } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -11,8 +13,11 @@ import Intro from './screens/intro';
 import ChatScreen from './screens/ChatScreen';
 import Models from './screens/Models';
 import Settings from './screens/Settings';
-import LoginScreen from './screens/LoginScreen';
-import SignupScreen from './screens/SignupScreen';
+import ProfileSelectScreen from './screens/ProfileSelectScreen';
+import DocumentsScreen from './screens/DocumentsScreen';
+
+
+import { ProfileProvider, useProfile } from './utils/ProfileContext';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -49,6 +54,16 @@ const MainTabs = () => {
           ),
         }}
       />
+      {/* ── NEW TAB ── */}
+      <Tab.Screen
+        name="Documents"
+        component={DocumentsScreen}
+        options={{
+          tabBarIcon: ({ focused }) => (
+            <Icon name="description" size={24} color={focused ? '#F5F4FF' : 'gray'} />
+          ),
+        }}
+      />
       <Tab.Screen
         name="Settings"
         component={Settings}
@@ -80,10 +95,14 @@ const AppContent = () => {
         setIsFirstLaunch(false);
       }
     };
+
+
     checkFirstLaunch();
   }, []);
 
-  if (isFirstLaunch === null) {
+  const { profileId, isLoading: profileLoading } = useProfile();
+
+  if (isFirstLaunch === null || profileLoading) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0B030F' }}>
         <ActivityIndicator size="large" color="#fbd85d" />
@@ -98,12 +117,18 @@ const AppContent = () => {
         {isFirstLaunch && (
           <Stack.Screen name="Intro" component={Intro} />
         )}
-        <Stack.Screen name="Main" component={MainTabs} />
-        <Stack.Screen name="Login" component={LoginScreen} />
-        <Stack.Screen name="Signup" component={SignupScreen} />
+        {!profileId ? (
+          <Stack.Screen name="ProfileSelect" component={ProfileSelectScreen} />
+        ) : (
+          <Stack.Screen name="Main" component={MainTabs} />
+        )}
       </Stack.Navigator>
     </NavigationContainer>
   );
 };
 
-export default AppContent;
+export default () => (
+  <ProfileProvider>
+    <AppContent />
+  </ProfileProvider>
+);

@@ -114,7 +114,7 @@ export const handleCalendarEvent = async (
     const jsonText = cleanJsonString(jsonMatch[0]);
     console.log('Cleaned JSON:', jsonText);
 
-    const eventData: Partial<CalendarEvent> = JSON.parse(jsonText);
+    const eventData: { Date?: string; Time?: string; Event?: string; location?: string; notes?: string } = JSON.parse(jsonText);
 
     const {
       Date: rawDate,
@@ -142,10 +142,6 @@ export const handleCalendarEvent = async (
       endDate,
       location,
       notes,
-      navigationBarIOS: {
-        tintColor: '#000000',
-        backgroundColor: '#ffffff',
-      },
     });
 
     console.log('Calendar Event Result:', resultDialog);
@@ -154,9 +150,9 @@ export const handleCalendarEvent = async (
   } catch (error) {
     const now = new Date();
     const fallback: CalendarEvent = {
-      Date: now.toISOString().split('T')[0],
-      Time: now.toTimeString().slice(0, 5),
-      Event: 'Untitled Event',
+      date: now.toISOString().split('T')[0],
+      time: now.toTimeString().slice(0, 5),
+      title: 'Untitled Event',
     };
 
     console.warn('JSON parsing failed. Falling back to defaults:', error);

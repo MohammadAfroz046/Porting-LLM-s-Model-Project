@@ -16,9 +16,13 @@ type Model = {
   progress: number;
   description: string;
 };
+import { useProfile } from '../utils/ProfileContext';
+import { profileKey } from '../utils/profileManager';
 
 const MODELS_DIR = RNFS.ExternalDirectoryPath + '/models';
-const SELECTED_MODEL_KEY = 'selected_model';
+// Removed global SELECTED_MODEL_KEY
+const EMBEDDING_MODEL_ID = 'all-minilm-l6-v2-q4_k_m';
+// Removed global EMBEDDING_MODEL_KEY
 
 const initialModels: Model[] = [
   {
@@ -165,13 +169,29 @@ const initialModels: Model[] = [
     progress: 0,
     description: 'Instruction following, Summarization, Rewriting'
   },
+  {
+    id: 'all-minilm-l6-v2-q4_k_m',
+    name: 'all-MiniLM-L6-v2 (Embedding Model)',
+    size: 45000000,
+    requiredRAM: 1,
+    downloadUrl: 'https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF/resolve/main/all-MiniLM-L6-v2-Q4_K_M.gguf',
+    localPath: null,
+    isDownloaded: false,
+    isDownloading: false,
+    progress: 0,
+    description: 'Required for document search (RAG). Semantic embedding model. Download this to use the Documents feature.',
+  },
 ];
-const ModelsScreen = ({ navigation }) => {
+const ModelsScreen = ({ navigation }: { navigation: any }) => {
   const [models, setModels] = useState<Model[]>(initialModels);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeDownload, setActiveDownload] = useState<string | null>(null);
   const abortControllers = React.useRef(new Map<string, AbortController>());
+  const { profileId } = useProfile();
+
+  const SELECTED_MODEL_KEY = profileId ? profileKey(profileId, '_selected_model') : 'selected_model';
+  const EMBEDDING_MODEL_KEY = profileId ? profileKey(profileId, '_embedding_model') : 'embedding_model_id';
 
   // Load saved models and selection
   useEffect(() => {
@@ -283,7 +303,7 @@ const ModelsScreen = ({ navigation }) => {
       await saveModels(updatedModels);
       setActiveDownload(null);
       abortControllers.current.delete(modelId);
-    } catch (error) {
+    } catch (error: any) {
       if (error.code === 'E_ABORTED') {
         console.log('Download aborted for:', modelId);
       }
@@ -311,7 +331,7 @@ const ModelsScreen = ({ navigation }) => {
         await AsyncStorage.removeItem(SELECTED_MODEL_KEY);
         setSelectedModelId(null);
       }
-    } catch (error) {
+    } catch (error: any) {
       Alert.alert('Error', 'Failed to delete model');
     }
   };
@@ -319,6 +339,13 @@ const ModelsScreen = ({ navigation }) => {
   const selectModel = async (modelId: string) => {
     setSelectedModelId(modelId);
     await AsyncStorage.setItem(SELECTED_MODEL_KEY, modelId);
+
+    if (modelId === EMBEDDING_MODEL_ID) {
+      await AsyncStorage.setItem(EMBEDDING_MODEL_KEY, modelId);
+      Alert.alert('Embedding Model Selected', 'This model will be used for document search (RAG).');
+      return;
+    }
+
     navigation.navigate('Chat', { selectedModelId: modelId });
   };
 
@@ -346,10 +373,10 @@ const ModelsScreen = ({ navigation }) => {
             <Card.Title
               title={item.name}
               titleStyle={styles.cardTitle}
-              subtitle={`${(item.size / 1024 / 1024).toFixed(2)}MB | ${item.requiredRAM}GB RAM`}
+              subtitle={`${(item.size / 1024 / 1024).toFixed(2)}MB | ${item.requiredRAM}GB RAM${item.id === EMBEDDING_MODEL_ID ? ' · EMBEDDING' : ''}`}
               subtitleStyle={styles.cardSubtitle}
               right={() => selectedModelId === item.id && (
-                <IconButton icon="check" color="#8B5CF6" size={24} />
+                <IconButton icon="check" iconColor="#8B5CF6" size={24} />
               )}
             />
             <Card.Content>

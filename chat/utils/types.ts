@@ -1,9 +1,14 @@
 export interface LlamaContext {
   completion: (params: {
-    messages: { role: string; content: string }[];
+    prompt?: string;
+    messages?: { role: string; content: string }[];
     n_predict: number;
     temperature: number;
+    top_p?: number;
+    stop?: string[];
   }) => Promise<{ text: string }>;
+  release: () => Promise<void>;
+  embedding: (text: string) => Promise<any>;
 }
 
 // Optional structured data for tasks (if they need it)
@@ -19,6 +24,7 @@ export interface CalendarEvent {
 export type RootTabParamList = {
   Models: undefined;
   Chat: undefined;
+  Documents: undefined;
   Settings: undefined;
 };
 export interface AlarmEvent {
