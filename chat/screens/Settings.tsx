@@ -1,24 +1,22 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-
+import { useProfile } from '../utils/ProfileContext';
 
 const Setting1 = ({ navigation }: { navigation: any }) => {
+  const { logout } = useProfile();
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Settings</Text>
 
       <TouchableOpacity
         style={styles.modelCard}
-        onPress={() => navigation.navigate('Login')}
+        onPress={async () => {
+          await logout();
+          // Navigation to ProfileSelect happens automatically via App.tsx conditional rendering
+        }}
       >
-        <Text style={styles.modelName}>Login</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={styles.modelCard}
-        onPress={() => navigation.navigate('Signup')}
-      >
-        <Text style={styles.modelName}>Signup</Text>
+        <Text style={styles.modelName}>Switch Profile</Text>
       </TouchableOpacity>
     </View>
   );

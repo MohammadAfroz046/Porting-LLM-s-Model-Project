@@ -14,6 +14,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   LogBox,
+  Keyboard,
+  SafeAreaView,
 } from 'react-native';
 import { initLlama, LlamaContext } from 'llama.rn';
 import RNFS from 'react-native-fs';
@@ -68,8 +70,8 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
   const [isHistoryModalVisible, setIsHistoryModalVisible] = useState(false);
   const modelId = route.params?.selectedModelId;
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  // Bug #11 fix: use a ref to hold context so cleanup always has the current value
   const contextRef = useRef<LlamaContext | null>(null);
+  const flatListRef = useRef<FlatList>(null);
   const { profileId } = useProfile();
 
   // Bug #16 fix: guard against null profileId in key generation
@@ -214,6 +216,16 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
     } catch (error) {
       console.error('Error clearing task history:', error);
       Alert.alert('Error', 'Failed to clear task history');
+    }
+  };
+
+  const clearChat = async () => {
+    Keyboard.dismiss();
+    try {
+      setMessages([]);
+      await AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify([]));
+    } catch (error) {
+      console.error('Error clearing chat history:', error);
     }
   };
 
@@ -395,33 +407,55 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
   );
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        {currentModel && (
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#0B0F19' }}>
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 20}
+      >
+        <View style={styles.header}>
+        {/* Left Side: New Chat Button */}
+        <View style={styles.headerSide}>
           <RNTouchableOpacity
-            style={styles.modelContainer}
-            onPress={() => {
-              try {
-                navigation.navigate('Models');
-              } catch (navError) {
-                console.error('Navigation error:', navError);
-                Alert.alert('Navigation Error', 'Failed to navigate to Models screen');
-              }
-            }}
+            style={styles.headerButton}
+            onPress={clearChat}
           >
-            <Text style={styles.modelName}>{currentModel}</Text>
-            <Icon name="arrow-drop-down" size={24} color="grey" />
+            <Icon name="add-comment" size={24} color="#E5E7EB" />
           </RNTouchableOpacity>
-        )}
-        <RNTouchableOpacity
-          style={styles.rightButton}
-          onPress={() => setIsHistoryModalVisible(true)}
-        >
-          <Image
-            source={require('../assets/list.png')}
-            style={[styles.iconImage, { tintColor: 'white' }]}
-          />
-        </RNTouchableOpacity>
+        </View>
+
+        {/* Center: Model Selector */}
+        <View style={styles.headerCenter}>
+          {currentModel && (
+            <RNTouchableOpacity
+              style={styles.modelContainer}
+              onPress={() => {
+                try {
+                  navigation.navigate('Models');
+                } catch (navError) {
+                  console.error('Navigation error:', navError);
+                  Alert.alert('Navigation Error', 'Failed to navigate to Models screen');
+                }
+              }}
+            >
+              <Text style={styles.modelName}>{currentModel}</Text>
+              <Icon name="arrow-drop-down" size={24} color="grey" />
+            </RNTouchableOpacity>
+          )}
+        </View>
+
+        {/* Right Side: Task History Button */}
+        <View style={[styles.headerSide, styles.headerRight]}>
+          <RNTouchableOpacity
+            style={styles.headerButton}
+            onPress={() => setIsHistoryModalVisible(true)}
+          >
+            <Image
+              source={require('../assets/list.png')}
+              style={styles.iconImage}
+            />
+          </RNTouchableOpacity>
+        </View>
       </View>
 
       {!context && !modelError ? (
@@ -464,10 +498,13 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
         </View>
       ) : (
         <FlatList
+          ref={flatListRef}
           data={messages}
           renderItem={renderMessage}
           keyExtractor={(_, index) => index.toString()}
           contentContainerStyle={styles.messagesContainer}
+          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+          keyboardShouldPersistTaps="handled"
         />
       )
       }
@@ -522,59 +559,56 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
         )
       }
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={80}
-      >
-        <View style={styles.inputWrapper}>
-          <TextInput
-            style={styles.input}
-            value={inputText}
-            onChangeText={setInputText}
-            placeholder="Type your message..."
-            placeholderTextColor="#888"
-            editable={!!context && !isLoading && !isListening}
-            multiline
-          />
-          <View style={styles.buttonContainer}>
-            {isLoading ? (
-              <RNTouchableOpacity
-                style={styles.iconButton}
-                onPress={handleStopGeneration}
-                onPressIn={() => console.log('Stop button pressed')}
-              >
-                <Icon name="stop" size={24} color="#888" />
-              </RNTouchableOpacity>
-            ) : (
-              <RNTouchableOpacity
-                style={styles.iconButton}
-                onPress={handleSend}
-                disabled={!context || isLoading || isListening}
-                onPressIn={() => console.log('Send button pressed')}
-              >
-                <Icon
-                  name="send"
-                  size={24}
-                  color={!context || isLoading || isListening ? '#aaa' : '#888'}
-                />
-              </RNTouchableOpacity>
-            )}
+      <View style={styles.inputWrapper}>
+        <TextInput
+          style={styles.input}
+          value={inputText}
+          onChangeText={setInputText}
+          placeholder="Type your message..."
+          placeholderTextColor="#888"
+          editable={!!context && !isLoading && !isListening}
+          multiline={true}
+          scrollEnabled={true}
+        />
+        <View style={styles.buttonContainer}>
+          {isLoading ? (
             <RNTouchableOpacity
               style={styles.iconButton}
-              onPress={startListening}
+              onPress={handleStopGeneration}
+              onPressIn={() => console.log('Stop button pressed')}
+            >
+              <Icon name="stop" size={24} color="#888" />
+            </RNTouchableOpacity>
+          ) : (
+            <RNTouchableOpacity
+              style={styles.iconButton}
+              onPress={handleSend}
               disabled={!context || isLoading || isListening}
-              onPressIn={() => console.log('Mic button pressed')}
+              onPressIn={() => console.log('Send button pressed')}
             >
               <Icon
-                name="mic"
+                name="send"
                 size={24}
                 color={!context || isLoading || isListening ? '#aaa' : '#888'}
               />
             </RNTouchableOpacity>
-          </View>
+          )}
+          <RNTouchableOpacity
+            style={styles.iconButton}
+            onPress={startListening}
+            disabled={!context || isLoading || isListening}
+            onPressIn={() => console.log('Mic button pressed')}
+          >
+            <Icon
+              name="mic"
+              size={24}
+              color={!context || isLoading || isListening ? '#aaa' : '#888'}
+            />
+          </RNTouchableOpacity>
+        </View>
         </View>
       </KeyboardAvoidingView>
-    </View >
+    </SafeAreaView>
   );
 };
 
@@ -584,11 +618,33 @@ const styles = StyleSheet.create({
     backgroundColor: '#0B0F19',
   },
   header: {
-    paddingHorizontal: 20,
-    paddingVertical: 15,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     flexDirection: 'row',
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  headerSide: {
+    flex: 1,
+  },
+  headerCenter: {
+    flex: 3,
+    alignItems: 'center',
+  },
+  headerRight: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+  },
+  headerButton: {
+    padding: 8,
+    marginLeft: 4,
+  },
+  iconImage: {
+    width: 24,
+    height: 24,
+    resizeMode: 'contain',
+    tintColor: '#E5E7EB',
   },
   modelContainer: {
     alignItems: 'center',
@@ -598,6 +654,7 @@ const styles = StyleSheet.create({
     paddingTop: 7,
     color: '#9CA3AF',
     fontFamily: 'sans-serif',
+    textAlign: 'center',
   },
   loadingContainer: {
     flex: 1,
@@ -614,25 +671,19 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    paddingBottom: 120, // Prevents overlap with sticky absolute input
   },
   maskContainer: {
-    backgroundColor: 'transparent',
+    flex: 1,
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  rightButton: {
-    padding: 8,
-  },
-  iconImage: {
-    width: 23.5,
-    height: 23.5,
-    right: -132,
-    resizeMode: 'contain',
-    opacity: 0.7,
-  },
   welcomeText: {
-    fontSize: 24,
+    fontSize: 28,
+    fontWeight: '600',
     color: '#E5E7EB',
     fontFamily: 'sans-serif',
+    textAlign: 'center',
   },
   errorText: {
     fontSize: 18,
@@ -656,7 +707,7 @@ const styles = StyleSheet.create({
   messagesContainer: {
     paddingHorizontal: 20,
     paddingTop: 16,
-    paddingBottom: 100,
+    paddingBottom: 150, // ensures last message is visible above absolute input wrapper
   },
   messageContainer: {
     marginBottom: 14,
@@ -715,30 +766,32 @@ const styles = StyleSheet.create({
     fontFamily: 'sans-serif',
   },
   inputWrapper: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#1F2937',
-    borderRadius: 58,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginHorizontal: 14,
-    marginVertical: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderColor: '#374151',
   },
   input: {
     flex: 1,
     minHeight: 50,
-    maxHeight: 130,
+    maxHeight: 120,
     fontSize: 17,
     color: '#F9FAFB',
     fontFamily: 'sans-serif',
-    paddingVertical: 14,
-    paddingRight: 80,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 10,
+    paddingRight: 10,
   },
   buttonContainer: {
     flexDirection: 'row',
-    position: 'absolute',
-    right: 10,
     alignItems: 'center',
+    paddingLeft: 10,
   },
   iconButton: {
     width: 40,

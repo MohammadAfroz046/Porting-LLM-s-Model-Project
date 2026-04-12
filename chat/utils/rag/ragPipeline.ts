@@ -89,8 +89,9 @@ export async function retrieveContext(
         return null;
     }
 
-    // Filter out low-relevance chunks to avoid injecting garbage
-    const MIN_SIMILARITY = 0.3;
+    // Filter out completely irrelevant chunks to avoid injecting garbage
+    // Note: Scores can be very low (e.g. 0.01) if a 3-word query is matched against an 80-word chunk
+    const MIN_SIMILARITY = 0.01;
     const relevant = results.filter(r => r.score >= MIN_SIMILARITY);
 
     console.log('[RAG] Search results:', results.map(r => ({

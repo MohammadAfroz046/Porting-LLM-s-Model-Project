@@ -7,8 +7,8 @@ export interface Chunk {
   docName: string;
 }
 
-const CHUNK_SIZE = 80;   // words per chunk
-const CHUNK_OVERLAP = 30; // overlapping words between chunks
+const CHUNK_SIZE = 100;   // words per chunk
+const CHUNK_OVERLAP = 20; // overlapping words between chunks
 
 /**
  * Splits raw text into overlapping word-based chunks.

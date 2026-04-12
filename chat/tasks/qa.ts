@@ -45,9 +45,18 @@ export const handleQA = async (
     n_predict: 512,
     temperature: 0.1, // Ultra-low temp to stop creative hallucinations
     top_p: 0.9,
+    stop: [
+      '<end_of_turn>',
+      '<eos>',
+      '<|im_end|>',
+      '</s>',
+      '<|eot_id|>'
+    ],
   });
 
-  const response = result.text?.trim();
+  // Clean up any residual special tokens that snuck into the output
+  let response = result.text?.trim() || '';
+  response = response.replace(/(<end_of_turn>|<eos>|<\|im_end\|>|<\/s>|<\|eot_id\|>)/gi, '').trim();
 
   if (!response) {
     throw new Error('Model returned empty response.');
