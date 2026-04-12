@@ -87,10 +87,10 @@ const initialModels: Model[] = [
   },
   {
     id: 'deepseek-coder-1.3b-instruct',
-    name: 'DeepSeek Coder 1.3B Instruct',
-    size: 2600000000, // Approx. for full model, not quantized
-    requiredRAM: 6, // Math.ceil(2600000000 / 500000000)
-    downloadUrl: 'https://huggingface.co/deepseek-ai/deepseek-coder-1.3b-instruct/resolve/main/model.safetensors',
+    name: 'DeepSeek Coder 1.3B Instruct (Q4_K_M)',
+    size: 853000000, // Approx. for Q4_K_M
+    requiredRAM: 2, // Math.ceil(853000000 / 500000000)
+    downloadUrl: 'https://huggingface.co/TheBloke/deepseek-coder-1.3b-instruct-GGUF/resolve/main/deepseek-coder-1.3b-instruct.Q4_K_M.gguf',
     localPath: null,
     isDownloaded: false,
     isDownloading: false,
