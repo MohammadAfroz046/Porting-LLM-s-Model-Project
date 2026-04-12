@@ -9,6 +9,7 @@ import { handleAlarm } from '../tasks/alarm';
 export const routeTask = async (
   input: string,
   context: LlamaContext,
+  profileId: string | null,
   saveTaskToHistory?: (input: string, taskType: string) => Promise<void>
 ): Promise<string> => {
   const lowerInput = input.toLowerCase();
@@ -76,5 +77,5 @@ export const routeTask = async (
     return await handleOpenApp(context, input);
   }
 
-  return await handleQA(context, input);
+  return await handleQA(context, input, profileId);
 };

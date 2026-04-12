@@ -10,7 +10,6 @@ import {
     search,
     SearchResult,
 } from './vectorStore';
-import RNFS from 'react-native-fs';
 
 // ─── Document Ingestion ───────────────────────────────────────────────────────
 
@@ -85,16 +84,30 @@ export async function retrieveContext(
     // Bug #8 fix: pass profileId to search() for proper profile isolation
     const results: SearchResult[] = search(queryVector, profileId, topK);
 
-    if (results.length === 0) return null;
+    if (results.length === 0) {
+        console.log('[RAG] No search results found in index.');
+        return null;
+    }
 
-    // Vector search dynamic thresholding handles the bounds now for relevant chunks.
-    const relevant = results;
-    
-    if (relevant.length === 0) return null;
+    // Filter out low-relevance chunks to avoid injecting garbage
+    const MIN_SIMILARITY = 0.3;
+    const relevant = results.filter(r => r.score >= MIN_SIMILARITY);
+
+    console.log('[RAG] Search results:', results.map(r => ({
+        score: r.score.toFixed(3),
+        doc: r.chunk.docName,
+        preview: r.chunk.text.substring(0, 150) + '...',
+    })));
+    console.log('[RAG] After threshold filter:', relevant.length, 'of', results.length, 'chunks kept');
+
+    if (relevant.length === 0) {
+        console.log('[RAG] All chunks below similarity threshold', MIN_SIMILARITY);
+        return null;
+    }
 
     // Format context for LLM prompt injection
     const context = relevant
-        .map((r, i) => `[${i + 1}] (from "${r.chunk.docName}")\n${r.chunk.text}`)
+        .map((r, i) => `[${i + 1}] (from "${r.chunk.docName}", relevance: ${r.score.toFixed(2)})\n${r.chunk.text}`)
         .join('\n\n');
 
     return context;

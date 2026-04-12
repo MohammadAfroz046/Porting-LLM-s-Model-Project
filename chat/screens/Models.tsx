@@ -187,11 +187,13 @@ const ModelsScreen = ({ navigation }: { navigation: any }) => {
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeDownload, setActiveDownload] = useState<string | null>(null);
-  const abortControllers = React.useRef(new Map<string, AbortController>());
+  const activeDownloadRef = React.useRef<string | null>(null);
+  const activeJobs = React.useRef(new Map<string, number>());
   const { profileId } = useProfile();
 
   const SELECTED_MODEL_KEY = profileId ? profileKey(profileId, '_selected_model') : 'selected_model';
   const EMBEDDING_MODEL_KEY = profileId ? profileKey(profileId, '_embedding_model') : 'embedding_model_id';
+  const MODELS_KEY = profileId ? profileKey(profileId, '_models') : 'models';
 
   // Load saved models and selection
   useEffect(() => {
@@ -199,11 +201,14 @@ const ModelsScreen = ({ navigation }: { navigation: any }) => {
       try {
         await RNFS.mkdir(MODELS_DIR);
         const [savedModels, savedSelected] = await Promise.all([
-          AsyncStorage.getItem('models'),
+          AsyncStorage.getItem(MODELS_KEY),
           AsyncStorage.getItem(SELECTED_MODEL_KEY)
         ]);
 
-        const modelList = savedModels ? JSON.parse(savedModels) : initialModels;
+        let modelList = savedModels ? JSON.parse(savedModels) : initialModels;
+        if (!modelList || modelList.length === 0) {
+          modelList = initialModels;
+        }
         const verifiedModels = await verifyModelFiles(modelList);
 
         setModels(verifiedModels);
@@ -219,8 +224,8 @@ const ModelsScreen = ({ navigation }: { navigation: any }) => {
 
     // Cleanup on component unmount
     return () => {
-      abortControllers.current.forEach(controller => controller.abort());
-      abortControllers.current.clear();
+      activeJobs.current.forEach(jobId => RNFS.stopDownload(jobId));
+      activeJobs.current.clear();
     };
   }, []);
 
@@ -232,32 +237,46 @@ const ModelsScreen = ({ navigation }: { navigation: any }) => {
   };
 
   const saveModels = async (updatedModels: Model[]) => {
-    await AsyncStorage.setItem('models', JSON.stringify(updatedModels));
+    await AsyncStorage.setItem(MODELS_KEY, JSON.stringify(updatedModels));
   };
 
-  const handleDownloadError = async (modelId: string) => {
-    const model = models.find(m => m.id === modelId)!;
-    if (model.localPath) {
-      try {
-        await RNFS.unlink(model.localPath);
-      } catch (err) {
-        console.error('Failed to delete partial download:', err);
+  const handleDownloadError = async (modelId: string, error?: any) => {
+    setModels(prev => {
+      const model = prev.find(m => m.id === modelId);
+      if (model?.localPath) {
+        // Fire & forget unlink
+        RNFS.exists(model.localPath).then(exists => {
+          if (exists) RNFS.unlink(model.localPath!);
+        }).catch(err => console.error('Failed to delete partial download:', err));
+      } else if (model) {
+        const ext = model.downloadUrl.split('.').pop()?.split('?')[0] || 'gguf';
+        const fallbackPath = `${MODELS_DIR}/${modelId}.${ext}`;
+        RNFS.exists(fallbackPath).then(exists => {
+          if (exists) RNFS.unlink(fallbackPath);
+        }).catch(err => console.error('Failed to delete partial download:', err));
       }
-    }
-    setModels(prev => prev.map(m =>
-      m.id === modelId ? { ...m, isDownloading: false, progress: 0, localPath: null } : m
-    ));
+
+      const updatedModels = prev.map(m =>
+        m.id === modelId ? { ...m, isDownloading: false, progress: 0, localPath: null } : m
+      );
+      saveModels(updatedModels);
+      return updatedModels;
+    });
+
     setActiveDownload(null);
-    abortControllers.current.delete(modelId);
-    Alert.alert('Error', 'Download failed or was interrupted');
+    activeDownloadRef.current = null;
+    activeJobs.current.delete(modelId);
+    if (error?.message !== 'Download has been aborted') {
+       Alert.alert('Error', 'Download failed or was interrupted\n' + (error?.message || ''));
+    }
   };
 
   const handleDownload = async (modelId: string) => {
-    if (activeDownload) {
-      
+    if (activeDownloadRef.current) {
       return;
     }
 
+    activeDownloadRef.current = modelId;
     setActiveDownload(modelId);
     setModels(prev => prev.map(m =>
       m.id === modelId ? { ...m, isDownloading: true, progress: 0 } : m
@@ -265,67 +284,85 @@ const ModelsScreen = ({ navigation }: { navigation: any }) => {
 
     try {
       const model = models.find(m => m.id === modelId)!;
-      const localPath = `${MODELS_DIR}/${modelId}.gguf`;
-      const controller = new AbortController();
-      abortControllers.current.set(modelId, controller);
-
-      await RNFS.downloadFile({
+      const ext = model.downloadUrl.split('.').pop()?.split('?')[0] || 'gguf';
+      const localPath = `${MODELS_DIR}/${modelId}.${ext}`;
+      
+      const options = {
         fromUrl: model.downloadUrl,
         toFile: localPath,
-        progress: res => {
-          const progress = Math.floor((res.bytesWritten / res.contentLength) * 100);
+        progress: (res: any) => {
+          const total = res.contentLength || model.size || 1;
+          const progress = Math.min(Math.floor((res.bytesWritten / total) * 100), 99);
           setModels(prev => prev.map(m =>
             m.id === modelId ? { ...m, progress } : m
           ));
         },
         progressDivider: 1,
-        begin: () => {
-          console.log('Download started for:', modelId);
+        begin: (res: any) => {
+          console.log('Download started:', res.statusCode, res.headers);
         },
         connectionTimeout: 30000,
         readTimeout: 30000,
         background: true,
-        cacheable: false,
-        signal: controller.signal
-      }).promise;
+        cacheable: false
+      };
 
-      const updatedModels = models.map(m =>
-        m.id === modelId ? {
-          ...m,
-          isDownloaded: true,
-          isDownloading: false,
-          localPath,
-          progress: 100
-        } : m
-      );
-
-      setModels(updatedModels);
-      await saveModels(updatedModels);
-      setActiveDownload(null);
-      abortControllers.current.delete(modelId);
-    } catch (error: any) {
-      if (error.code === 'E_ABORTED') {
-        console.log('Download aborted for:', modelId);
+      const ret = RNFS.downloadFile(options);
+      activeJobs.current.set(modelId, ret.jobId);
+      
+      const result = await ret.promise;
+      
+      if (result.statusCode !== 200) {
+        throw new Error(`Server returned status code ${result.statusCode}`);
       }
-      await handleDownloadError(modelId);
+
+      let latestUpdatedModels: Model[] = [];
+      setModels(prev => {
+        latestUpdatedModels = prev.map(m =>
+          m.id === modelId ? {
+            ...m,
+            isDownloaded: true,
+            isDownloading: false,
+            localPath,
+            progress: 100
+          } : m
+        );
+        return latestUpdatedModels;
+      });
+
+      await saveModels(latestUpdatedModels);
+      setActiveDownload(null);
+      activeDownloadRef.current = null;
+      activeJobs.current.delete(modelId);
+    } catch (error: any) {
+      console.error('Download error:', error);
+      await handleDownloadError(modelId, error);
     }
   };
 
   const handleDelete = async (modelId: string) => {
     try {
       const model = models.find(m => m.id === modelId)!;
+      if (model.isDownloading) {
+        Alert.alert('Cannot delete while downloading');
+        return;
+      }
+
       if (model.localPath) await RNFS.unlink(model.localPath);
 
-      const updatedModels = models.map(m =>
-        m.id === modelId ? {
-          ...m,
-          isDownloaded: false,
-          localPath: null
-        } : m
-      );
+      let latestUpdatedModels: Model[] = [];
+      setModels(prev => {
+        latestUpdatedModels = prev.map(m =>
+          m.id === modelId ? {
+            ...m,
+            isDownloaded: false,
+            localPath: null
+          } : m
+        );
+        return latestUpdatedModels;
+      });
 
-      setModels(updatedModels);
-      await saveModels(updatedModels);
+      await saveModels(latestUpdatedModels);
 
       if (selectedModelId === modelId) {
         await AsyncStorage.removeItem(SELECTED_MODEL_KEY);
@@ -337,15 +374,20 @@ const ModelsScreen = ({ navigation }: { navigation: any }) => {
   };
 
   const selectModel = async (modelId: string) => {
-    setSelectedModelId(modelId);
-    await AsyncStorage.setItem(SELECTED_MODEL_KEY, modelId);
-
+    // If the user selected the embedding model, do NOT overwrite the chat
+    // model selection key. Store it separately and bail out early.
     if (modelId === EMBEDDING_MODEL_ID) {
       await AsyncStorage.setItem(EMBEDDING_MODEL_KEY, modelId);
-      Alert.alert('Embedding Model Selected', 'This model will be used for document search (RAG).');
+      Alert.alert(
+        'Embedding Model Ready',
+        'This model will be used for document search (RAG). It cannot be used as a chat model.'
+      );
       return;
     }
 
+    // Only save as the selected chat model if it is an actual LLM
+    setSelectedModelId(modelId);
+    await AsyncStorage.setItem(SELECTED_MODEL_KEY, modelId);
     navigation.navigate('Chat', { selectedModelId: modelId });
   };
 
@@ -415,14 +457,39 @@ const ModelsScreen = ({ navigation }: { navigation: any }) => {
                     {selectedModelId === item.id ? 'Selected' : 'Select'}
                   </Button>
                 </>
+              ) : item.isDownloading ? (
+                <>
+                  <Button
+                    mode="outlined"
+                    onPress={async () => {
+                      const jobId = activeJobs.current.get(item.id);
+                      if (jobId) {
+                        RNFS.stopDownload(jobId);
+                        await handleDownloadError(item.id, { message: 'Download has been aborted' });
+                      }
+                    }}
+                    style={styles.cancelButton}
+                    labelStyle={styles.cancelButtonLabel}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    mode="contained"
+                    style={styles.button}
+                    labelStyle={styles.buttonLabel}
+                    loading={true}
+                    disabled={true}
+                  >
+                    Downloading
+                  </Button>
+                </>
               ) : (
                 <Button
                   mode="contained"
                   onPress={() => handleDownload(item.id)}
-                  loading={item.isDownloading}
                   style={styles.button}
                   labelStyle={styles.buttonLabel}
-                  disabled={item.isDownloading || !!activeDownload}
+                  disabled={!!activeDownload}
                 >
                   Download
                 </Button>
@@ -501,6 +568,16 @@ const styles = StyleSheet.create({
   buttonLabel: {
     fontSize: 14,
     color: '#F9FAFB',
+    fontFamily: 'sans-serif',
+  },
+  cancelButton: {
+    marginLeft: 8,
+    borderRadius: 24,
+    borderColor: '#EF4444', 
+  },
+  cancelButtonLabel: {
+    fontSize: 14,
+    color: '#EF4444',
     fontFamily: 'sans-serif',
   },
   cardActions: {

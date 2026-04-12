@@ -9,13 +9,16 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Swiper from 'react-native-swiper';
+import { useProfile } from '../utils/ProfileContext';
 
 type RootStackParamList = {
   Main: undefined;
+  ProfileSelect: undefined;
 };
 
 const Intro = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const { profileId } = useProfile();
 
   return (
     <View style={styles.mainContainer}>
@@ -57,7 +60,13 @@ const Intro = () => {
           <Text style={styles.description}>We're glad to have you on board.</Text>
           <TouchableOpacity
             style={styles.button}
-            onPress={() => navigation.replace('Main')}
+            onPress={() => {
+              if (profileId) {
+                navigation.replace('Main');
+              } else {
+                navigation.replace('ProfileSelect');
+              }
+            }}
           >
             <Text style={styles.buttonText}>Get Started</Text>
           </TouchableOpacity>

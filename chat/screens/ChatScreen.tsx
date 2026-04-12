@@ -18,8 +18,7 @@ import {
 import { initLlama, LlamaContext } from 'llama.rn';
 import RNFS from 'react-native-fs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { retrieveContext } from '../utils/rag/ragPipeline';
-import { initEmbeddingModel } from '../utils/rag/embedder';
+// RAG retrieval now handled inside qa.ts — no longer needed here
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import AudioWaveform from './audiowaveformCode';
 import { routeTask } from '../utils/taskRouter';
@@ -89,6 +88,15 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
         let selectedModelId = modelId || (await AsyncStorage.getItem(SELECTED_MODEL_KEY));
         if (!selectedModelId) {
           throw new Error('No model selected. Please select a model to start chatting.');
+        }
+
+        // Safety guard: the embedding model (MiniLM) must never be loaded as a
+        // chat LLM — it only outputs raw token strings, not natural language.
+        if (selectedModelId === 'all-minilm-l6-v2-q4_k_m') {
+          await AsyncStorage.removeItem(SELECTED_MODEL_KEY);
+          throw new Error(
+            'The embedding model (MiniLM) cannot be used for chat. Please go to Models and select a chat model (e.g. TinyLlama, Gemma, Phi).'
+          );
         }
 
         const modelPath = `${MODELS_DIR}/${selectedModelId}.gguf`;
@@ -285,21 +293,10 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
 
     try {
       const startTime = Date.now();
-      
-      let finalPrompt = userMessage.text;
-      try {
-        if (profileId) {
-          // Embedding model is initialized by ProfileContext — no duplicate init needed
-          const contextText = await retrieveContext(userMessage.text, profileId);
-          if (contextText) {
-            finalPrompt = `Use the following context to answer:\n\n${contextText}\n\nUser: ${userMessage.text}`;
-          }
-        }
-      } catch (err) {
-        console.warn('RAG retrieval failed in ChatScreen:', err);
-      }
 
-      const response = await routeTask(finalPrompt, context, saveTaskToHistory);
+      // RAG context injection now happens inside handleQA (qa.ts) so that
+      // the task router only sees the raw user query for keyword matching.
+      const response = await routeTask(userMessage.text, context, profileId, saveTaskToHistory);
 
       if (!response || typeof response !== 'string') {
         throw new Error('Invalid response from routeTask');
