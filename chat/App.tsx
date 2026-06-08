@@ -17,6 +17,7 @@ import ProfileSelectScreen from './screens/ProfileSelectScreen';
 import DocumentsScreen from './screens/DocumentsScreen';
 
 
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ProfileProvider, useProfile } from './utils/ProfileContext';
 
 const Tab = createBottomTabNavigator();
@@ -128,7 +129,9 @@ const AppContent = () => {
 };
 
 export default () => (
-  <ProfileProvider>
-    <AppContent />
-  </ProfileProvider>
+  <SafeAreaProvider>
+    <ProfileProvider>
+      <AppContent />
+    </ProfileProvider>
+  </SafeAreaProvider>
 );

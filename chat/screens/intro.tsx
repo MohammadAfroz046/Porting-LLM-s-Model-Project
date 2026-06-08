@@ -38,7 +38,7 @@ const Intro = () => {
           />
           <View style={styles.textContainer}>
             <Text style={styles.title}>
-              Meet <Text style={styles.highlight}>Sundae</Text>!
+              Meet <Text style={styles.highlight}>Genix</Text>!
             </Text>
             <Text style={styles.subtitle}>Your own AI assistant</Text>
             <Text style={styles.description}>

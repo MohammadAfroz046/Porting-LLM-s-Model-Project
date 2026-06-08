@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { View, FlatList, Alert, StyleSheet, ActivityIndicator, SafeAreaView} from 'react-native';
+import { View, FlatList, Alert, StyleSheet, ActivityIndicator } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, ProgressBar, Text, IconButton } from 'react-native-paper';
 import RNFS from 'react-native-fs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -26,6 +27,18 @@ const EMBEDDING_MODEL_ID = 'all-minilm-l6-v2-q4_k_m';
 
 const initialModels: Model[] = [
   {
+    id: 'gemma-2-2b-it-Q4_K_M',
+    name: 'Gemma-2-2b-it (Q4_K_M) (Recommended)',
+    size: 1434085216, // actual file size in bytes (~1.43 GB)
+    requiredRAM: 3, // Math.ceil(1434085216 / 500000000) = 3
+    downloadUrl: 'https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf',
+    localPath: null,
+    isDownloaded: false,
+    isDownloading: false,
+    progress: 0,
+    description: 'Instruction-tuned Gemma 2B for chat, reasoning, and general tasks under low RAM.'
+  },
+  {
     id: 'tinyllama-1.1b',
     name: 'TinyLlama 1.1B',
     size: 550000000,
@@ -48,18 +61,6 @@ const initialModels: Model[] = [
     isDownloading: false,
     progress: 0,
     description: 'Chat and reasoning model. Blend of Stability AI’s StableLM and Zephyr fine-tuning.'
-  },
-  {
-    id: 'gemma-2-2b-it-Q4_K_M',
-    name: 'Gemma-2-2b-it (Q4_K_M)',
-    size: 1434085216, // actual file size in bytes (~1.43 GB)
-    requiredRAM: 3, // Math.ceil(1434085216 / 500000000) = 3
-    downloadUrl: 'https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf',
-    localPath: null,
-    isDownloaded: false,
-    isDownloading: false,
-    progress: 0,
-    description: 'Instruction-tuned Gemma 2B for chat, reasoning, and general tasks under low RAM.'
   },
   {
     id: 'DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M',
@@ -205,9 +206,28 @@ const ModelsScreen = ({ navigation }: { navigation: any }) => {
           AsyncStorage.getItem(SELECTED_MODEL_KEY)
         ]);
 
-        let modelList = savedModels ? JSON.parse(savedModels) : initialModels;
-        if (!modelList || modelList.length === 0) {
-          modelList = initialModels;
+        let modelList = initialModels;
+        if (savedModels) {
+          try {
+            const savedList = JSON.parse(savedModels);
+            if (Array.isArray(savedList)) {
+              modelList = initialModels.map(initModel => {
+                const savedModel = savedList.find(s => s.id === initModel.id);
+                if (savedModel) {
+                  return {
+                    ...initModel,
+                    localPath: savedModel.localPath,
+                    isDownloaded: savedModel.isDownloaded,
+                    isDownloading: savedModel.isDownloading,
+                    progress: savedModel.progress,
+                  };
+                }
+                return initModel;
+              });
+            }
+          } catch (e) {
+            console.error('Failed to parse saved models:', e);
+          }
         }
         const verifiedModels = await verifyModelFiles(modelList);
 

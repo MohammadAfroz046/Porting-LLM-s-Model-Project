@@ -1,12 +1,13 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useProfile } from '../utils/ProfileContext';
 
 const Setting1 = ({ navigation }: { navigation: any }) => {
   const { logout } = useProfile();
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container}>
       <Text style={styles.title}>Settings</Text>
 
       <TouchableOpacity
@@ -18,7 +19,7 @@ const Setting1 = ({ navigation }: { navigation: any }) => {
       >
         <Text style={styles.modelName}>Switch Profile</Text>
       </TouchableOpacity>
-    </View>
+    </SafeAreaView>
   );
 };
 

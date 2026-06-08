@@ -15,8 +15,9 @@ import {
   Platform,
   LogBox,
   Keyboard,
-  SafeAreaView,
+  Animated,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { initLlama, LlamaContext } from 'llama.rn';
 import RNFS from 'react-native-fs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -56,6 +57,55 @@ type Task = {
   dateTime: string;
 };
 
+const CustomSwitch = ({
+  value,
+  onValueChange,
+}: {
+  value: boolean;
+  onValueChange: (val: boolean) => void;
+}) => {
+  const animatedValue = useRef(new Animated.Value(value ? 1 : 0)).current;
+
+  useEffect(() => {
+    Animated.timing(animatedValue, {
+      toValue: value ? 1 : 0,
+      duration: 200,
+      useNativeDriver: false,
+    }).start();
+  }, [value]);
+
+  const toggleTranslate = animatedValue.interpolate({
+    inputRange: [0, 1],
+    outputRange: [3, 37],
+  });
+
+  const backgroundColor = animatedValue.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['#374151', '#8B5CF6'],
+  });
+
+  return (
+    <RNTouchableOpacity
+      activeOpacity={0.8}
+      onPress={() => onValueChange(!value)}
+    >
+      <Animated.View style={[styles.switchContainer, { backgroundColor }]}>
+        {value ? (
+          <Text style={[styles.switchText, styles.switchTextOn]}>ON</Text>
+        ) : (
+          <Text style={[styles.switchText, styles.switchTextOff]}>OFF</Text>
+        )}
+        <Animated.View
+          style={[
+            styles.switchKnob,
+            { transform: [{ translateX: toggleTranslate }] },
+          ]}
+        />
+      </Animated.View>
+    </RNTouchableOpacity>
+  );
+};
+
 const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
@@ -73,11 +123,13 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
   const contextRef = useRef<LlamaContext | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const { profileId } = useProfile();
+  const [chatMode, setChatMode] = useState<'general' | 'document'>('general');
 
   // Bug #16 fix: guard against null profileId in key generation
   const SELECTED_MODEL_KEY = profileId ? profileKey(profileId, '_selected_model') : '';
   const TASK_HISTORY_KEY = profileId ? profileKey(profileId, '_task_history') : '';
   const CHAT_MESSAGES_KEY = profileId ? profileKey(profileId, '_chat_messages') : '';
+  const CHAT_MODE_KEY = profileId ? profileKey(profileId, '_chat_mode') : '';
 
   useEffect(() => {
     LogBox.ignoreLogs(['new NativeEventEmitter']);
@@ -158,9 +210,25 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
       }
     };
 
+    const loadChatMode = async () => {
+      try {
+        if (CHAT_MODE_KEY) {
+          const savedMode = await AsyncStorage.getItem(CHAT_MODE_KEY);
+          if (savedMode === 'general' || savedMode === 'document') {
+            setChatMode(savedMode);
+          } else {
+            setChatMode('general');
+          }
+        }
+      } catch (error) {
+        console.error('Error loading chat mode:', error);
+      }
+    };
+
     initializeModel();
     loadTaskHistory();
     loadChatHistory();
+    loadChatMode();
 
     return () => {
       if (typingTimeoutRef.current) {
@@ -178,7 +246,19 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
         }
       }
     };
-  }, [modelId]);
+  }, [modelId, profileId]);
+
+  const handleToggleChange = async (val: boolean) => {
+    const newMode = val ? 'document' : 'general';
+    setChatMode(newMode);
+    try {
+      if (CHAT_MODE_KEY) {
+        await AsyncStorage.setItem(CHAT_MODE_KEY, newMode);
+      }
+    } catch (error) {
+      console.error('Error saving chat mode:', error);
+    }
+  };
 
   const LoadingDots = () => {
     const [dots, setDots] = useState('');
@@ -308,7 +388,7 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
 
       // RAG context injection now happens inside handleQA (qa.ts) so that
       // the task router only sees the raw user query for keyword matching.
-      const response = await routeTask(userMessage.text, context, profileId, saveTaskToHistory);
+      const response = await routeTask(userMessage.text, context, profileId, saveTaskToHistory, chatMode);
 
       if (!response || typeof response !== 'string') {
         throw new Error('Invalid response from routeTask');
@@ -414,49 +494,60 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
         keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 20}
       >
         <View style={styles.header}>
-        {/* Left Side: New Chat Button */}
-        <View style={styles.headerSide}>
-          <RNTouchableOpacity
-            style={styles.headerButton}
-            onPress={clearChat}
-          >
-            <Icon name="add-comment" size={24} color="#E5E7EB" />
-          </RNTouchableOpacity>
-        </View>
+          {/* Top Row: Navigation Controls */}
+          <View style={styles.headerTopRow}>
+            {/* Left Side: New Chat Button */}
+            <View style={styles.headerLeft}>
+              <RNTouchableOpacity
+                style={styles.headerButton}
+                onPress={clearChat}
+              >
+                <Icon name="add-comment" size={24} color="#E5E7EB" />
+              </RNTouchableOpacity>
+            </View>
 
-        {/* Center: Model Selector */}
-        <View style={styles.headerCenter}>
-          {currentModel && (
-            <RNTouchableOpacity
-              style={styles.modelContainer}
-              onPress={() => {
-                try {
-                  navigation.navigate('Models');
-                } catch (navError) {
-                  console.error('Navigation error:', navError);
-                  Alert.alert('Navigation Error', 'Failed to navigate to Models screen');
-                }
-              }}
-            >
-              <Text style={styles.modelName}>{currentModel}</Text>
-              <Icon name="arrow-drop-down" size={24} color="grey" />
-            </RNTouchableOpacity>
-          )}
-        </View>
+            {/* Center: Model Selector */}
+            <View style={styles.headerCenter}>
+              {currentModel && (
+                <RNTouchableOpacity
+                  style={styles.modelContainer}
+                  onPress={() => {
+                    try {
+                      navigation.navigate('Models');
+                    } catch (navError) {
+                      console.error('Navigation error:', navError);
+                      Alert.alert('Navigation Error', 'Failed to navigate to Models screen');
+                    }
+                  }}
+                >
+                  <Text style={styles.modelName} numberOfLines={1} ellipsizeMode="tail">{currentModel}</Text>
+                  <Icon name="arrow-drop-down" size={24} color="grey" />
+                </RNTouchableOpacity>
+              )}
+            </View>
 
-        {/* Right Side: Task History Button */}
-        <View style={[styles.headerSide, styles.headerRight]}>
-          <RNTouchableOpacity
-            style={styles.headerButton}
-            onPress={() => setIsHistoryModalVisible(true)}
-          >
-            <Image
-              source={require('../assets/list.png')}
-              style={styles.iconImage}
+            {/* Right Side: Task History Button */}
+            <View style={styles.headerRightSide}>
+              <RNTouchableOpacity
+                style={styles.headerButton}
+                onPress={() => setIsHistoryModalVisible(true)}
+              >
+                <Image
+                  source={require('../assets/list.png')}
+                  style={styles.iconImage}
+                />
+              </RNTouchableOpacity>
+            </View>
+          </View>
+
+          {/* Bottom Row: Mode Toggle Switch */}
+          <View style={styles.headerBottomRow}>
+            <CustomSwitch
+              value={chatMode === 'document'}
+              onValueChange={handleToggleChange}
             />
-          </RNTouchableOpacity>
+          </View>
         </View>
-      </View>
 
       {!context && !modelError ? (
         <View style={styles.loadingContainer}>
@@ -564,7 +655,7 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
           style={styles.input}
           value={inputText}
           onChangeText={setInputText}
-          placeholder="Type your message..."
+          placeholder={chatMode === 'document' ? "Ask about your documents..." : "Type your message..."}
           placeholderTextColor="#888"
           editable={!!context && !isLoading && !isListening}
           multiline={true}
@@ -606,7 +697,7 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
             />
           </RNTouchableOpacity>
         </View>
-        </View>
+      </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -619,22 +710,40 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: 12,
+    paddingBottom: 8,
+    flexDirection: 'column',
+    alignItems: 'stretch',
+  },
+  headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    width: '100%',
   },
-  headerSide: {
+  headerLeft: {
     flex: 1,
-  },
-  headerCenter: {
-    flex: 3,
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
     alignItems: 'center',
   },
-  headerRight: {
+  headerCenter: {
+    flex: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerRightSide: {
+    flex: 1,
     flexDirection: 'row',
     justifyContent: 'flex-end',
     alignItems: 'center',
+  },
+  headerBottomRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    alignItems: 'center',
+    paddingLeft: 4,
+    marginTop: 4,
   },
   headerButton: {
     padding: 8,
@@ -647,14 +756,18 @@ const styles = StyleSheet.create({
     tintColor: '#E5E7EB',
   },
   modelContainer: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    maxWidth: '100%',
+    paddingHorizontal: 8,
   },
   modelName: {
     fontSize: 15.5,
-    paddingTop: 7,
     color: '#9CA3AF',
     fontFamily: 'sans-serif',
     textAlign: 'center',
+    maxWidth: 110,
   },
   loadingContainer: {
     flex: 1,
@@ -777,6 +890,39 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderTopWidth: 1,
     borderColor: '#374151',
+  },
+  switchContainer: {
+    width: 64,
+    height: 30,
+    borderRadius: 15,
+    padding: 3,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    position: 'relative',
+  },
+  switchKnob: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    position: 'absolute',
+    top: 3,
+    left: 0,
+  },
+  switchText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    position: 'absolute',
+    fontFamily: 'sans-serif',
+    top: 6,
+  },
+  switchTextOn: {
+    left: 10,
+  },
+  switchTextOff: {
+    right: 8,
   },
   input: {
     flex: 1,
