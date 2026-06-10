@@ -12,7 +12,7 @@ import Swiper from 'react-native-swiper';
 import { useProfile } from '../utils/ProfileContext';
 
 type RootStackParamList = {
-  Main: undefined;
+  Chat: undefined;
   ProfileSelect: undefined;
 };
 
@@ -62,7 +62,7 @@ const Intro = () => {
             style={styles.button}
             onPress={() => {
               if (profileId) {
-                navigation.replace('Main');
+                navigation.replace('Chat');
               } else {
                 navigation.replace('ProfileSelect');
               }

@@ -17,7 +17,7 @@ import {
   Keyboard,
   Animated,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { initLlama, LlamaContext } from 'llama.rn';
 import RNFS from 'react-native-fs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -26,7 +26,7 @@ import Icon from 'react-native-vector-icons/MaterialIcons';
 import AudioWaveform from './audiowaveformCode';
 import { routeTask } from '../utils/taskRouter';
 import { useProfile } from '../utils/ProfileContext';
-import { profileKey } from '../utils/profileManager';
+import { Profile, getProfiles, profileKey } from '../utils/profileManager';
 
 // Use platform-specific paths for MODELS_DIR
 const MODELS_DIR = RNFS.ExternalDirectoryPath + '/models';
@@ -106,7 +106,14 @@ const CustomSwitch = ({
   );
 };
 
+type ChatSession = {
+  id: string;
+  title: string;
+  createdAt: string;
+};
+
 const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
+  const insets = useSafeAreaInsets();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [context, setContext] = useState<LlamaContext | null>(null);
@@ -125,11 +132,50 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
   const { profileId } = useProfile();
   const [chatMode, setChatMode] = useState<'general' | 'document'>('general');
 
+  // Drawer state & animations
+  const drawerAnimation = useRef(new Animated.Value(0)).current;
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [activeProfile, setActiveProfile] = useState<Profile | null>(null);
+
+  // Multi-chat sessions state
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+
+  // Direct document ingest states
+  const [isIngesting, setIsIngesting] = useState(false);
+  const [ingestStatus, setIngestStatus] = useState('');
+  const isCreatingNewChat = useRef(false);
+
+  const formatModelName = (name: string) => {
+    if (!name) return 'Select Model';
+    let clean = name;
+    if (clean.toLowerCase().includes('gemma-2-2b')) return 'Gemma 2 2B';
+    if (clean.toLowerCase().includes('tinyllama')) return 'TinyLlama 1.1B';
+    if (clean.toLowerCase().includes('stablelm-2-zephyr')) return 'StableLM 2 Zephyr 1.6B';
+    if (clean.toLowerCase().includes('deepseek-r1-distill-qwen-1.5b')) return 'DeepSeek R1 1.5B';
+    if (clean.toLowerCase().includes('deepseek-coder-1.3b')) return 'DeepSeek Coder 1.3B';
+    if (clean.toLowerCase().includes('phi-2')) return 'Phi-2';
+    if (clean.toLowerCase().includes('opengpt-3')) return 'OpenGPT-3';
+    if (clean.toLowerCase().includes('phi-3.5-mini')) return 'Phi-3.5 Mini';
+    if (clean.toLowerCase().includes('qwen2.5-1.5b')) return 'Qwen 2.5 1.5B';
+    if (clean.toLowerCase().includes('qwen2.5-3b')) return 'Qwen 2.5 3B';
+    if (clean.toLowerCase().includes('llama-3.2-1b')) return 'Llama 3.2 1B';
+    if (clean.toLowerCase().includes('llama-3.2-3b')) return 'Llama 3.2 3B';
+    if (clean.toLowerCase().includes('all-minilm')) return 'MiniLM L6 v2';
+
+    clean = clean.replace(/-it-|-chat-|-instruct-/gi, ' ');
+    clean = clean.replace(/-q\d_[a-z_0-9]+/gi, ''); 
+    clean = clean.replace(/\.gguf$/i, '');
+    clean = clean.replace(/-/g, ' ');
+    return clean.replace(/\b\w/g, c => c.toUpperCase());
+  };
+
   // Bug #16 fix: guard against null profileId in key generation
   const SELECTED_MODEL_KEY = profileId ? profileKey(profileId, '_selected_model') : '';
   const TASK_HISTORY_KEY = profileId ? profileKey(profileId, '_task_history') : '';
   const CHAT_MESSAGES_KEY = profileId ? profileKey(profileId, '_chat_messages') : '';
   const CHAT_MODE_KEY = profileId ? profileKey(profileId, '_chat_mode') : '';
+  const SESSIONS_LIST_KEY = profileId ? profileKey(profileId, '_chat_sessions') : '';
 
   useEffect(() => {
     LogBox.ignoreLogs(['new NativeEventEmitter']);
@@ -201,15 +247,6 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
       }
     };
 
-    const loadChatHistory = async () => {
-      try {
-        const chatData = await AsyncStorage.getItem(CHAT_MESSAGES_KEY);
-        if (chatData) setMessages(JSON.parse(chatData));
-      } catch (error) {
-        console.error('Error loading chat history:', error);
-      }
-    };
-
     const loadChatMode = async () => {
       try {
         if (CHAT_MODE_KEY) {
@@ -227,7 +264,6 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
 
     initializeModel();
     loadTaskHistory();
-    loadChatHistory();
     loadChatMode();
 
     return () => {
@@ -247,6 +283,97 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
       }
     };
   }, [modelId, profileId]);
+
+  // Load active profile metadata
+  useEffect(() => {
+    const fetchProfile = async () => {
+      if (profileId) {
+        try {
+          const profiles = await getProfiles();
+          const active = profiles.find((p) => p.id === profileId);
+          if (active) {
+            setActiveProfile(active);
+          }
+        } catch (e) {
+          console.error('Error fetching active profile:', e);
+        }
+      }
+    };
+    fetchProfile();
+  }, [profileId]);
+
+  // Load chat sessions on mount/profile switch
+  useEffect(() => {
+    const loadSessions = async () => {
+      if (!profileId || !SESSIONS_LIST_KEY) return;
+      try {
+        const rawSessions = await AsyncStorage.getItem(SESSIONS_LIST_KEY);
+        let sessionsList: ChatSession[] = [];
+        if (rawSessions) {
+          sessionsList = JSON.parse(rawSessions);
+        }
+
+        // Migration Check: If no sessions exist, check if there are legacy messages in CHAT_MESSAGES_KEY
+        if (sessionsList.length === 0) {
+          const legacyMessages = await AsyncStorage.getItem(CHAT_MESSAGES_KEY);
+          if (legacyMessages) {
+            const parsedMsgs = JSON.parse(legacyMessages);
+            if (Array.isArray(parsedMsgs) && parsedMsgs.length > 0) {
+              const legacySession: ChatSession = {
+                id: 'session_legacy',
+                title: 'Recent Chat',
+                createdAt: new Date().toISOString(),
+              };
+              sessionsList = [legacySession];
+              await AsyncStorage.setItem(SESSIONS_LIST_KEY, JSON.stringify(sessionsList));
+              await AsyncStorage.setItem(
+                profileKey(profileId, `_chat_messages_session_legacy`),
+                JSON.stringify(parsedMsgs)
+              );
+            }
+          }
+        }
+
+        // If still empty, create a default first session
+        if (sessionsList.length === 0) {
+          const defaultSession: ChatSession = {
+            id: `session_${Date.now()}`,
+            title: 'New Chat',
+            createdAt: new Date().toISOString(),
+          };
+          sessionsList = [defaultSession];
+          await AsyncStorage.setItem(SESSIONS_LIST_KEY, JSON.stringify(sessionsList));
+        }
+
+        setSessions(sessionsList);
+        setActiveSessionId(sessionsList[0].id);
+      } catch (e) {
+        console.error('Error loading chat sessions:', e);
+      }
+    };
+
+    loadSessions();
+  }, [profileId, SESSIONS_LIST_KEY]);
+
+  // Load messages for the active session
+  useEffect(() => {
+    const loadMessagesForSession = async () => {
+      if (!profileId || !activeSessionId) return;
+      try {
+        const key = profileKey(profileId, `_chat_messages_${activeSessionId}`);
+        const rawMsgs = await AsyncStorage.getItem(key);
+        if (rawMsgs) {
+          setMessages(JSON.parse(rawMsgs));
+        } else {
+          setMessages([]);
+        }
+      } catch (e) {
+        console.error('Error loading messages for session:', e);
+      }
+    };
+
+    loadMessagesForSession();
+  }, [profileId, activeSessionId]);
 
   const handleToggleChange = async (val: boolean) => {
     const newMode = val ? 'document' : 'general';
@@ -314,12 +441,16 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
     let currentIndex = 0;
 
     const typeNextWord = () => {
+      const sessionMessagesKey = profileKey(profileId!, `_chat_messages_${activeSessionId}`);
       if (currentIndex >= words.length) {
         const responseDuration = ((Date.now() - startTime) / 1000).toFixed(2) + 's';
         setMessages((prev) => {
           const updated = [...prev];
           const last = updated[updated.length - 1];
           if (last) last.responseTime = responseDuration;
+          if (sessionMessagesKey) {
+            AsyncStorage.setItem(sessionMessagesKey, JSON.stringify(updated)).catch(console.error);
+          }
           return updated;
         });
         setIsLoading(false);
@@ -335,7 +466,9 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
           type: 'bot',
           time: getCurrentTime(),
         };
-        AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(updated)).catch(console.error);
+        if (sessionMessagesKey) {
+          AsyncStorage.setItem(sessionMessagesKey, JSON.stringify(updated)).catch(console.error);
+        }
         return updated;
       });
 
@@ -355,9 +488,7 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
       const updated = [...prev];
       const last = updated[updated.length - 1];
       if (last?.type === 'loading') {
-        updated.pop(); // Remove loading message if no response yet
-      } else if (last?.type === 'bot') {
-        // Keep the partial response as is
+        updated.pop();
       }
       return updated;
     });
@@ -365,29 +496,44 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
   };
 
   const handleSend = async () => {
-    if (!inputText.trim() || !context || isLoading || isListening) return;
+    if (!inputText.trim() || !context || isLoading || isListening || !activeSessionId) return;
 
+    const userQueryText = inputText.trim();
     const userMessage = {
-      text: inputText.trim(),
+      text: userQueryText,
       type: 'user' as const,
       time: getCurrentTime(),
     };
 
-    // Bug #10 fix: single atomic setMessages call instead of two separate pushes
     setInputText('');
     setIsLoading(true);
 
+    const sessionMessagesKey = profileKey(profileId!, `_chat_messages_${activeSessionId}`);
+
+    let updatedMsgs: Message[] = [];
     setMessages((prev) => {
-      const updated = [...prev, userMessage, { text: '...', type: 'loading' as const, time: getCurrentTime() }];
-      AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(updated)).catch(console.error);
-      return updated;
+      updatedMsgs = [...prev, userMessage, { text: '...', type: 'loading' as const, time: getCurrentTime() }];
+      if (sessionMessagesKey) {
+        AsyncStorage.setItem(sessionMessagesKey, JSON.stringify(updatedMsgs)).catch(console.error);
+      }
+      return updatedMsgs;
     });
+
+    const activeSession = sessions.find((s) => s.id === activeSessionId);
+    if (activeSession && activeSession.title === 'New Chat') {
+      const generatedTitle =
+        userQueryText.substring(0, 26) + (userQueryText.length > 26 ? '...' : '');
+      const updatedSessions = sessions.map((s) =>
+        s.id === activeSessionId ? { ...s, title: generatedTitle } : s
+      );
+      setSessions(updatedSessions);
+      if (SESSIONS_LIST_KEY) {
+        AsyncStorage.setItem(SESSIONS_LIST_KEY, JSON.stringify(updatedSessions)).catch(console.error);
+      }
+    }
 
     try {
       const startTime = Date.now();
-
-      // RAG context injection now happens inside handleQA (qa.ts) so that
-      // the task router only sees the raw user query for keyword matching.
       const response = await routeTask(userMessage.text, context, profileId, saveTaskToHistory, chatMode);
 
       if (!response || typeof response !== 'string') {
@@ -401,29 +547,146 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
       setErrorCount((prev) => prev + 1);
 
       setMessages((prev) => {
-        const updated = [...prev];
-        const last = updated[updated.length - 1];
-
+        const last = prev[prev.length - 1];
+        let updated: Message[] = [];
         if (last?.type === 'loading') {
+          updated = [...prev];
           updated[updated.length - 1] = {
             text: `❌ Error: ${errorMessage}`,
             type: 'bot',
             time: getCurrentTime(),
           };
         } else {
-          updated.push({
+          updated = [...prev, {
             text: `❌ Error: ${errorMessage}`,
             type: 'bot',
             time: getCurrentTime(),
-          });
+          }];
         }
-
+        if (sessionMessagesKey) {
+          AsyncStorage.setItem(sessionMessagesKey, JSON.stringify(updated)).catch(console.error);
+        }
         return updated;
       });
 
       Alert.alert('Error', `Failed to generate response: ${errorMessage}`);
       setIsLoading(false);
     }
+  };
+
+  const startNewChat = async () => {
+    if (!profileId || !SESSIONS_LIST_KEY || isCreatingNewChat.current) return;
+    
+    // Check if current messages are already empty
+    if (messages.length === 0) {
+      closeDrawer();
+      return;
+    }
+
+    // Also check if the active session is already empty (named "New Chat")
+    const activeSession = sessions.find((s) => s.id === activeSessionId);
+    if (activeSession && activeSession.title === 'New Chat') {
+      closeDrawer();
+      return;
+    }
+
+    try {
+      isCreatingNewChat.current = true;
+      const newSession: ChatSession = {
+        id: `session_${Date.now()}`,
+        title: 'New Chat',
+        createdAt: new Date().toISOString(),
+      };
+      const updatedSessions = [newSession, ...sessions];
+      setSessions(updatedSessions);
+      await AsyncStorage.setItem(SESSIONS_LIST_KEY, JSON.stringify(updatedSessions));
+      setActiveSessionId(newSession.id);
+      setMessages([]);
+      closeDrawer();
+    } catch (e) {
+      console.error('Error starting new chat:', e);
+      Alert.alert('Error', 'Failed to start a new chat');
+    } finally {
+      isCreatingNewChat.current = false;
+    }
+  };
+
+  const deleteSession = async (sessionId: string) => {
+    Alert.alert(
+      'Delete Chat',
+      'Are you sure you want to delete this chat session?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              if (profileId) {
+                const sessionMessagesKey = profileKey(profileId, `_chat_messages_${sessionId}`);
+                await AsyncStorage.removeItem(sessionMessagesKey);
+              }
+
+              const updatedSessions = sessions.filter((s) => s.id !== sessionId);
+              if (profileId && SESSIONS_LIST_KEY) {
+                if (updatedSessions.length === 0) {
+                  const defaultSession: ChatSession = {
+                    id: `session_${Date.now()}`,
+                    title: 'New Chat',
+                    createdAt: new Date().toISOString(),
+                  };
+                  const finalSessions = [defaultSession];
+                  setSessions(finalSessions);
+                  await AsyncStorage.setItem(SESSIONS_LIST_KEY, JSON.stringify(finalSessions));
+                  setActiveSessionId(defaultSession.id);
+                  setMessages([]);
+                } else {
+                  setSessions(updatedSessions);
+                  await AsyncStorage.setItem(SESSIONS_LIST_KEY, JSON.stringify(updatedSessions));
+                  if (activeSessionId === sessionId) {
+                    setActiveSessionId(updatedSessions[0].id);
+                  }
+                }
+              }
+            } catch (e) {
+              console.error('Error deleting session:', e);
+              Alert.alert('Error', 'Failed to delete chat session');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const selectSession = (sessionId: string) => {
+    setActiveSessionId(sessionId);
+    closeDrawer();
+  };
+
+  // Cleaned up handlePickDocument and extractText from ChatScreen - now fully managed in DocumentsScreen
+
+  const openDrawer = () => {
+    setIsDrawerOpen(true);
+    Animated.timing(drawerAnimation, {
+      toValue: 1,
+      duration: 250,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const closeDrawer = () => {
+    Animated.timing(drawerAnimation, {
+      toValue: 0,
+      duration: 200,
+      useNativeDriver: true,
+    }).start(() => {
+      setIsDrawerOpen(false);
+    });
+  };
+
+  const navigateTo = (screenName: string) => {
+    closeDrawer();
+    navigation.navigate(screenName);
   };
 
   const startListening = () => {
@@ -487,219 +750,360 @@ const ChatScreen = ({ navigation, route }: { navigation: any; route: any }) => {
   );
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#0B0F19' }}>
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 20}
-      >
-        <View style={styles.header}>
-          {/* Top Row: Navigation Controls */}
-          <View style={styles.headerTopRow}>
-            {/* Left Side: New Chat Button */}
-            <View style={styles.headerLeft}>
-              <RNTouchableOpacity
-                style={styles.headerButton}
-                onPress={clearChat}
-              >
-                <Icon name="add-comment" size={24} color="#E5E7EB" />
-              </RNTouchableOpacity>
-            </View>
-
-            {/* Center: Model Selector */}
-            <View style={styles.headerCenter}>
-              {currentModel && (
+    <View style={{ flex: 1, position: 'relative', backgroundColor: '#0B0F19', paddingTop: insets.top }}>
+      <View style={{ flex: 1, backgroundColor: '#0B0F19' }}>
+        <KeyboardAvoidingView
+          style={styles.container}
+          behavior="padding"
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 16}
+        >
+          <View style={styles.header}>
+            <View style={styles.headerTopRow}>
+              <View style={styles.headerLeft}>
                 <RNTouchableOpacity
-                  style={styles.modelContainer}
-                  onPress={() => {
-                    try {
-                      navigation.navigate('Models');
-                    } catch (navError) {
-                      console.error('Navigation error:', navError);
-                      Alert.alert('Navigation Error', 'Failed to navigate to Models screen');
-                    }
-                  }}
+                  style={styles.headerButton}
+                  onPress={openDrawer}
                 >
-                  <Text style={styles.modelName} numberOfLines={1} ellipsizeMode="tail">{currentModel}</Text>
-                  <Icon name="arrow-drop-down" size={24} color="grey" />
+                  <View style={styles.menuIconContainer}>
+                    <View style={[styles.menuLine, { width: 22 }]} />
+                    <View style={[styles.menuLine, { width: 22 }]} />
+                    <View style={[styles.menuLine, { width: 12 }]} />
+                  </View>
                 </RNTouchableOpacity>
-              )}
-            </View>
+              </View>
 
-            {/* Right Side: Task History Button */}
-            <View style={styles.headerRightSide}>
+              <View style={styles.headerCenter}>
+                <RNTouchableOpacity onPress={() => navigateTo('Models')}>
+                  <Text style={styles.headerTitleText}>{formatModelName(currentModel)}</Text>
+                </RNTouchableOpacity>
+              </View>
+
+              <View style={styles.headerRightSide}>
+                <RNTouchableOpacity
+                  style={styles.headerButton}
+                  onPress={() => navigateTo('Settings')}
+                >
+                  <Icon name="face" size={26} color="#E5E7EB" />
+                </RNTouchableOpacity>
+              </View>
+            </View>
+          </View>
+
+          {!context && !modelError ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#8B5CF6" />
+              <Text style={styles.loadingText}>{modelStatus}</Text>
+            </View>
+          ) : !context && modelError ? (
+            <View style={styles.welcomeContainer}>
+              <Text style={styles.errorText}>{modelError}</Text>
               <RNTouchableOpacity
-                style={styles.headerButton}
-                onPress={() => setIsHistoryModalVisible(true)}
+                style={styles.selectModelButton}
+                onPress={() => navigation.navigate('Models')}
               >
-                <Image
-                  source={require('../assets/list.png')}
-                  style={styles.iconImage}
-                />
+                <Text style={styles.selectModelButtonText}>Go to Models Screen</Text>
               </RNTouchableOpacity>
             </View>
-          </View>
-
-          {/* Bottom Row: Mode Toggle Switch */}
-          <View style={styles.headerBottomRow}>
-            <CustomSwitch
-              value={chatMode === 'document'}
-              onValueChange={handleToggleChange}
+          ) : messages.length === 0 ? (
+            <View style={styles.welcomeContainer}>
+              <MaskedView
+                maskElement={
+                  <View style={styles.maskContainer}>
+                    <Text style={[styles.welcomeText, { backgroundColor: 'transparent' }]}>
+                      How may I help you?
+                    </Text>
+                  </View>
+                }
+              >
+                <LinearGradient
+                  colors={['rgba(232, 74, 127, 1)', 'rgba(122, 95, 255, 1)']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                >
+                  <Text style={[styles.welcomeText, { opacity: 0 }]}>
+                    How may I help you?
+                  </Text>
+                </LinearGradient>
+              </MaskedView>
+            </View>
+          ) : (
+            <FlatList
+              ref={flatListRef}
+              data={messages}
+              renderItem={renderMessage}
+              keyExtractor={(_, index) => index.toString()}
+              style={{ flex: 1 }}
+              contentContainerStyle={styles.messagesContainer}
+              onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+              keyboardShouldPersistTaps="handled"
             />
-          </View>
-        </View>
+          )}
 
-      {!context && !modelError ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#6200EE" />
-          <Text style={styles.loadingText}>{modelStatus}</Text>
-        </View>
-      ) : !context && modelError ? (
-        <View style={styles.welcomeContainer}>
-          <Text style={styles.errorText}>{modelError}</Text>
-          <RNTouchableOpacity
-            style={styles.selectModelButton}
-            onPress={() => navigation.navigate('Models')}
+          {isIngesting && (
+            <Modal transparent={true} visible={true} animationType="fade">
+              <View style={styles.ingestModalOverlay}>
+                <View style={styles.ingestModalContent}>
+                  <ActivityIndicator size="large" color="#8B5CF6" />
+                  <Text style={styles.ingestModalText}>{ingestStatus}</Text>
+                </View>
+              </View>
+            </Modal>
+          )}
+
+          <Modal
+            animationType="slide"
+            transparent={true}
+            visible={isHistoryModalVisible}
+            onRequestClose={() => setIsHistoryModalVisible(false)}
           >
-            <Text style={styles.selectModelButtonText}>Go to Models Screen</Text>
-          </RNTouchableOpacity>
-        </View>
-      ) : messages.length === 0 ? (
-        <View style={styles.welcomeContainer}>
-          <MaskedView
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalContainer}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Task History</Text>
+                  <RNTouchableOpacity
+                    style={styles.clearButton}
+                    onPress={clearTaskHistory}
+                  >
+                    <Text style={styles.clearButtonText}>Clear</Text>
+                  </RNTouchableOpacity>
+                  <RNTouchableOpacity onPress={() => setIsHistoryModalVisible(false)}>
+                    <Icon name="close" size={24} color="#fff" />
+                  </RNTouchableOpacity>
+                </View>
+                <FlatList
+                  data={taskHistory}
+                  renderItem={renderTask}
+                  keyExtractor={(item) => item.id}
+                  contentContainerStyle={styles.taskList}
+                  ListEmptyComponent={
+                    <Text style={styles.emptyText}>No tasks yet</Text>
+                  }
+                />
+              </View>
+            </View>
+          </Modal>
 
-            maskElement={
-              <View style={styles.maskContainer}>
-                <Text style={[styles.welcomeText, { backgroundColor: 'transparent' }]}>
-                  How may I help you?
+          {isListening && (
+            <View style={styles.listeningContainer}>
+              <AudioWaveform />
+              <Text style={styles.listeningText}>🎙️ Listening...</Text>
+              <View style={styles.controls}>
+                <RNTouchableOpacity onPress={stopListening} style={styles.controlButton}>
+                  <Icon name="check-circle" size={28} color="#fff" />
+                </RNTouchableOpacity>
+                <RNTouchableOpacity onPress={cancelListening} style={styles.controlButton}>
+                  <Icon name="cancel" size={28} color="#fff" />
+                </RNTouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          <View style={styles.inputWrapper}>
+            <TextInput
+              style={styles.input}
+              value={inputText}
+              onChangeText={setInputText}
+              placeholder={chatMode === 'document' ? "Ask about your documents..." : "Type your message..."}
+              placeholderTextColor="#888"
+              editable={!!context && !isLoading && !isListening}
+              multiline={true}
+              scrollEnabled={true}
+            />
+            <View style={styles.inputActionRow}>
+              <View style={styles.leftActions}>
+                <RNTouchableOpacity
+                  style={styles.addButton}
+                  onPress={() => navigateTo('Documents')}
+                >
+                  <Icon name="add" size={22} color="#FFFFFF" />
+                </RNTouchableOpacity>
+
+                <RNTouchableOpacity
+                  style={[
+                    styles.actionPill,
+                    chatMode === 'document' ? styles.actionPillActive : styles.actionPillInactive
+                  ]}
+                  onPress={() => handleToggleChange(chatMode === 'general')}
+                >
+                  <Icon
+                    name={chatMode === 'document' ? "description" : "chat"}
+                    size={14}
+                    color={chatMode === 'document' ? "#FFFFFF" : "#9CA3AF"}
+                  />
+                  <Text
+                    style={[
+                      styles.actionPillText,
+                      chatMode === 'document' ? styles.actionPillTextActive : styles.actionPillTextInactive
+                    ]}
+                  >
+                    {chatMode === 'document' ? "Document" : "General"}
+                  </Text>
+                </RNTouchableOpacity>
+              </View>
+
+              <View style={styles.rightActions}>
+                <RNTouchableOpacity
+                  style={styles.micButton}
+                  onPress={startListening}
+                  disabled={!context || isLoading || isListening}
+                >
+                  <Icon
+                    name="mic"
+                    size={20}
+                    color={!context || isLoading || isListening ? '#6B7280' : '#FFFFFF'}
+                  />
+                </RNTouchableOpacity>
+
+                {isLoading ? (
+                  <RNTouchableOpacity
+                    style={styles.stopButton}
+                    onPress={handleStopGeneration}
+                  >
+                    <Icon name="stop" size={20} color="#FFFFFF" />
+                  </RNTouchableOpacity>
+                ) : (
+                  <RNTouchableOpacity
+                    style={[
+                      styles.sendButtonCircle,
+                      (!context || !inputText.trim() || isListening) && styles.sendButtonCircleDisabled
+                    ]}
+                    onPress={handleSend}
+                    disabled={!context || !inputText.trim() || isListening}
+                  >
+                    <Icon
+                      name="arrow-upward"
+                      size={20}
+                      color="#0B0F19"
+                    />
+                  </RNTouchableOpacity>
+                )}
+              </View>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </View>
+
+      {/* Drawer Backdrop Overlay */}
+      {isDrawerOpen && (
+        <Animated.View
+          style={[
+            styles.drawerBackdrop,
+            {
+              opacity: drawerAnimation.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, 1],
+              }),
+            },
+          ]}
+        >
+          <RNTouchableOpacity activeOpacity={1} style={{ flex: 1 }} onPress={closeDrawer} />
+        </Animated.View>
+      )}
+
+      {/* Drawer Panel */}
+      {isDrawerOpen && (
+        <Animated.View
+          style={[
+            styles.drawerContainer,
+            {
+              transform: [
+                {
+                  translateX: drawerAnimation.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [-280, 0],
+                  }),
+                },
+              ],
+            },
+          ]}
+        >
+          <View style={styles.drawerHeader}>
+            <Text style={styles.drawerBrand}>Genix</Text>
+          </View>
+
+          <View style={styles.drawerNav}>
+            <RNTouchableOpacity
+              style={styles.drawerNavItem}
+              onPress={() => {
+                closeDrawer();
+                setIsHistoryModalVisible(true);
+              }}
+            >
+              <Icon name="assignment" size={22} color="#9CA3AF" style={styles.drawerNavIcon} />
+              <Text style={styles.drawerNavText}>Task History</Text>
+            </RNTouchableOpacity>
+
+            <RNTouchableOpacity style={styles.drawerNavItem} onPress={() => navigateTo('Models')}>
+              <Icon name="folder" size={22} color="#9CA3AF" style={styles.drawerNavIcon} />
+              <Text style={styles.drawerNavText}>Models</Text>
+            </RNTouchableOpacity>
+
+            <RNTouchableOpacity style={styles.drawerNavItem} onPress={() => navigateTo('Documents')}>
+              <Icon name="description" size={22} color="#9CA3AF" style={styles.drawerNavIcon} />
+              <Text style={styles.drawerNavText}>Documents</Text>
+            </RNTouchableOpacity>
+
+            <RNTouchableOpacity style={styles.drawerNavItem} onPress={() => navigateTo('Settings')}>
+              <Icon name="settings" size={22} color="#9CA3AF" style={styles.drawerNavIcon} />
+              <Text style={styles.drawerNavText}>Settings</Text>
+            </RNTouchableOpacity>
+          </View>
+
+          <View style={styles.drawerDivider} />
+
+          <Text style={styles.drawerSectionHeader}>Recents</Text>
+
+          <FlatList
+            data={sessions}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <RNTouchableOpacity
+                style={[
+                  styles.drawerSessionItem,
+                  item.id === activeSessionId && styles.drawerSessionItemActive,
+                ]}
+                onPress={() => selectSession(item.id)}
+                onLongPress={() => deleteSession(item.id)}
+              >
+                <Icon
+                  name="chat-bubble-outline"
+                  size={16}
+                  color={item.id === activeSessionId ? '#FFFFFF' : '#9CA3AF'}
+                  style={styles.drawerSessionIcon}
+                />
+                <Text
+                  style={[
+                    styles.drawerSessionText,
+                    item.id === activeSessionId && styles.drawerSessionTextActive,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {item.title}
+                </Text>
+              </RNTouchableOpacity>
+            )}
+            style={styles.drawerSessionsList}
+            contentContainerStyle={{ paddingBottom: 20 }}
+            keyboardShouldPersistTaps="handled"
+          />
+
+          <View style={styles.drawerFooter}>
+            <RNTouchableOpacity style={styles.drawerProfileBtn} onPress={() => navigateTo('Settings')}>
+              <View style={[styles.drawerAvatar, { backgroundColor: activeProfile?.avatarColor || '#8B5CF6' }]}>
+                <Text style={styles.drawerAvatarText}>
+                  {activeProfile?.name?.charAt(0).toUpperCase() || 'A'}
                 </Text>
               </View>
-            }
-          >
-            <LinearGradient
-              colors={['rgba(232, 74, 127, 1)', 'rgba(122, 95, 255, 1)']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-            >
-              <Text style={[styles.welcomeText, { opacity: 0 }]}>
-                How may I help you?
-              </Text>
-            </LinearGradient>
-          </MaskedView>
-        </View>
-      ) : (
-        <FlatList
-          ref={flatListRef}
-          data={messages}
-          renderItem={renderMessage}
-          keyExtractor={(_, index) => index.toString()}
-          contentContainerStyle={styles.messagesContainer}
-          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
-          keyboardShouldPersistTaps="handled"
-        />
-      )
-      }
-
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={isHistoryModalVisible}
-        onRequestClose={() => setIsHistoryModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContainer}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Task History</Text>
-              <RNTouchableOpacity
-                style={styles.clearButton}
-                onPress={clearTaskHistory}
-              >
-                <Text style={styles.clearButtonText}>Clear</Text>
-              </RNTouchableOpacity>
-              <RNTouchableOpacity onPress={() => setIsHistoryModalVisible(false)}>
-                <Icon name="close" size={24} color="#fff" />
-              </RNTouchableOpacity>
-            </View>
-            <FlatList
-              data={taskHistory}
-              renderItem={renderTask}
-              keyExtractor={(item) => item.id}
-              contentContainerStyle={styles.taskList}
-              ListEmptyComponent={
-                <Text style={styles.emptyText}>No tasks yet</Text>
-              }
-            />
-          </View>
-        </View>
-      </Modal>
-
-      {
-        isListening && (
-          <View style={styles.listeningContainer}>
-            <AudioWaveform />
-            <Text style={styles.listeningText}>🎙️ Listening...</Text>
-            <View style={styles.controls}>
-              <RNTouchableOpacity onPress={stopListening} style={styles.controlButton}>
-                <Icon name="check-circle" size={28} color="#fff" />
-              </RNTouchableOpacity>
-              <RNTouchableOpacity onPress={cancelListening} style={styles.controlButton}>
-                <Icon name="cancel" size={28} color="#fff" />
-              </RNTouchableOpacity>
-            </View>
-          </View>
-        )
-      }
-
-      <View style={styles.inputWrapper}>
-        <TextInput
-          style={styles.input}
-          value={inputText}
-          onChangeText={setInputText}
-          placeholder={chatMode === 'document' ? "Ask about your documents..." : "Type your message..."}
-          placeholderTextColor="#888"
-          editable={!!context && !isLoading && !isListening}
-          multiline={true}
-          scrollEnabled={true}
-        />
-        <View style={styles.buttonContainer}>
-          {isLoading ? (
-            <RNTouchableOpacity
-              style={styles.iconButton}
-              onPress={handleStopGeneration}
-              onPressIn={() => console.log('Stop button pressed')}
-            >
-              <Icon name="stop" size={24} color="#888" />
             </RNTouchableOpacity>
-          ) : (
-            <RNTouchableOpacity
-              style={styles.iconButton}
-              onPress={handleSend}
-              disabled={!context || isLoading || isListening}
-              onPressIn={() => console.log('Send button pressed')}
-            >
-              <Icon
-                name="send"
-                size={24}
-                color={!context || isLoading || isListening ? '#aaa' : '#888'}
-              />
+
+            <RNTouchableOpacity style={styles.drawerNewChatBtn} onPress={startNewChat}>
+              <Icon name="add" size={18} color="#0B0F19" />
+              <Text style={styles.drawerNewChatBtnText}>New chat</Text>
             </RNTouchableOpacity>
-          )}
-          <RNTouchableOpacity
-            style={styles.iconButton}
-            onPress={startListening}
-            disabled={!context || isLoading || isListening}
-            onPressIn={() => console.log('Mic button pressed')}
-          >
-            <Icon
-              name="mic"
-              size={24}
-              color={!context || isLoading || isListening ? '#aaa' : '#888'}
-            />
-          </RNTouchableOpacity>
-        </View>
-      </View>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+          </View>
+        </Animated.View>
+      )}
+    </View>
   );
 };
 
@@ -820,7 +1224,7 @@ const styles = StyleSheet.create({
   messagesContainer: {
     paddingHorizontal: 20,
     paddingTop: 16,
-    paddingBottom: 150, // ensures last message is visible above absolute input wrapper
+    paddingBottom: 24, // simplified as input floats
   },
   messageContainer: {
     marginBottom: 14,
@@ -879,16 +1283,13 @@ const styles = StyleSheet.create({
     fontFamily: 'sans-serif',
   },
   inputWrapper: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#1F2937',
+    backgroundColor: '#1E293B',
+    borderRadius: 24,
     paddingHorizontal: 16,
     paddingVertical: 10,
-    borderTopWidth: 1,
+    marginHorizontal: 16,
+    marginBottom: Platform.OS === 'ios' ? 10 : 20,
+    borderWidth: 1,
     borderColor: '#374151',
   },
   switchContainer: {
@@ -925,30 +1326,105 @@ const styles = StyleSheet.create({
     right: 8,
   },
   input: {
-    flex: 1,
-    minHeight: 50,
-    maxHeight: 120,
-    fontSize: 17,
     color: '#F9FAFB',
+    fontSize: 16.5,
+    minHeight: 45,
+    maxHeight: 120,
     fontFamily: 'sans-serif',
-    paddingVertical: Platform.OS === 'ios' ? 14 : 10,
-    paddingRight: 10,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 8,
+    textAlignVertical: 'top',
   },
-  buttonContainer: {
+  inputActionRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingLeft: 10,
+    justifyContent: 'space-between',
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 0.5,
+    borderColor: '#374151',
   },
-  iconButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#888',
-    backgroundColor: '#1F2937',
+  leftActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  rightActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  addButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#374151',
     justifyContent: 'center',
     alignItems: 'center',
-    marginHorizontal: 4,
+    marginRight: 8,
+  },
+  actionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 16,
+    marginRight: 8,
+  },
+  actionPillActive: {
+    backgroundColor: '#8B5CF6',
+  },
+  actionPillInactive: {
+    backgroundColor: '#374151',
+  },
+  actionPillText: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginLeft: 4,
+  },
+  actionPillTextActive: {
+    color: '#FFFFFF',
+  },
+  actionPillTextInactive: {
+    color: '#9CA3AF',
+  },
+  modelPill: {
+    backgroundColor: '#374151',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 16,
+    maxWidth: 100,
+  },
+  modelPillText: {
+    fontSize: 12,
+    color: '#E5E7EB',
+    fontWeight: '500',
+  },
+  micButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#374151',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  sendButtonCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sendButtonCircleDisabled: {
+    backgroundColor: '#4B5563',
+  },
+  stopButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#EF4444',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   listeningContainer: {
     position: 'absolute',
@@ -964,6 +1440,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.15,
     shadowRadius: 6,
     elevation: 5,
+    zIndex: 10,
   },
   listeningText: {
     marginTop: 10,
@@ -1000,7 +1477,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#1F2937',
     borderRadius: 16,
     width: '90%',
-    maxHeight: '50%',
+    maxHeight: '70%',
     padding: 20,
   },
   modalHeader: {
@@ -1059,6 +1536,180 @@ const styles = StyleSheet.create({
     color: '#ff6363',
     fontFamily: 'sans-serif',
     fontWeight: '600',
+  },
+  // Custom side drawer styles
+  drawerBackdrop: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    zIndex: 1000,
+  },
+  drawerContainer: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    width: 280,
+    backgroundColor: '#0B0F19',
+    borderRightWidth: 1,
+    borderColor: '#1F2937',
+    zIndex: 1001,
+    paddingTop: Platform.OS === 'ios' ? 50 : 20,
+    flexDirection: 'column',
+  },
+  drawerHeader: {
+    paddingHorizontal: 20,
+    paddingTop: 35,
+    marginBottom: 26,
+  },
+  drawerBrand: {
+    fontSize: 26,
+    fontWeight: 'bold',
+    color: '#F9FAFB',
+    fontFamily: 'serif',
+  },
+  drawerNav: {
+    paddingHorizontal: 10,
+    marginBottom: 8,
+  },
+  drawerNavItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginBottom: 4,
+  },
+  drawerNavIcon: {
+    marginRight: 12,
+  },
+  drawerNavText: {
+    fontSize: 16,
+    color: '#E5E7EB',
+    fontWeight: '500',
+  },
+  drawerDivider: {
+    height: 1,
+    backgroundColor: '#1F2937',
+    marginHorizontal: 20,
+    marginVertical: 12,
+  },
+  drawerSectionHeader: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#6B7280',
+    textTransform: 'uppercase',
+    paddingHorizontal: 22,
+    marginBottom: 8,
+    letterSpacing: 1,
+  },
+  drawerSessionsList: {
+    flex: 1,
+  },
+  drawerSessionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 22,
+    borderRadius: 8,
+    marginHorizontal: 10,
+    marginBottom: 2,
+  },
+  drawerSessionItemActive: {
+    backgroundColor: '#1E293B',
+  },
+  drawerSessionIcon: {
+    marginRight: 10,
+  },
+  drawerSessionText: {
+    fontSize: 14.5,
+    color: '#9CA3AF',
+    flex: 1,
+  },
+  drawerSessionTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  drawerFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderColor: '#1F2937',
+    paddingBottom: Platform.OS === 'ios' ? 30 : 20,
+  },
+  drawerProfileBtn: {
+    padding: 2,
+  },
+  drawerAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  drawerAvatarText: {
+    fontSize: 18,
+    color: '#111827',
+    fontWeight: 'bold',
+  },
+  drawerNewChatBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F9FAFB',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 24,
+  },
+  drawerNewChatBtnText: {
+    fontSize: 14,
+    color: '#0B0F19',
+    fontWeight: '600',
+    marginLeft: 4,
+  },
+  // Ingest modal overlay styles
+  ingestModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  ingestModalContent: {
+    backgroundColor: '#1E293B',
+    padding: 24,
+    borderRadius: 16,
+    alignItems: 'center',
+    width: '80%',
+  },
+  ingestModalText: {
+    marginTop: 16,
+    color: '#E5E7EB',
+    fontSize: 16,
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  headerTitleText: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#E5E7EB',
+    fontFamily: 'serif',
+  },
+  menuIconContainer: {
+    width: 24,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+  },
+  menuLine: {
+    height: 2.2,
+    backgroundColor: '#E5E7EB',
+    borderRadius: 1,
+    marginVertical: 2.5,
   },
 });
 
